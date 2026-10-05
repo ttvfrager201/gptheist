@@ -5,7 +5,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AGENTS, EXECUTION_MODE, ensureSafeAuditDirectory, runSimulation, sanitizeTerminal, validateFixture, writeJsonlLog, type ReplayFixture, type SimulationResult } from "./simulation.js";
 import { PaperStore } from "./paper-store.js";
-import { startDeskServer } from "./server.js";
+import { createHttpRpcCaller, startDeskServer } from "./server.js";
+import { startPaperEngine } from "./paper-runtime.js";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -86,9 +87,21 @@ async function main(args: string[]): Promise<void> {
     const rpcUrl = process.env.RPC_URL;
     const discoveryIntervalMs = Number(process.env.PAPER_DISCOVERY_INTERVAL_MS ?? 4000);
     if (!Number.isFinite(discoveryIntervalMs) || discoveryIntervalMs < 1000) throw new Error("PAPER_DISCOVERY_INTERVAL_MS must be at least 1000");
-    const server = await startDeskServer({ host, port, ...(rpcUrl ? { rpcUrl } : {}), paperDiscoveryIntervalMs: discoveryIntervalMs,
-      paperLog: message => process.stdout.write(sanitizeTerminal(message) + "\n") });
-    for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { server.close(); server.closeIdleConnections(); });
+      const rpc = createHttpRpcCaller(rpcUrl);
+      const paperLog = (message: string): void => { process.stdout.write(sanitizeTerminal(message) + "\n"); };
+      let paper: Awaited<ReturnType<typeof startPaperEngine>> | undefined;
+      let paperError: string | undefined;
+      try {
+        paper = await startPaperEngine({ directory: resolve(process.cwd(), "runs/paper"), rpc,
+          discoveryIntervalMs, log: paperLog });
+      } catch (error) { paperError = error instanceof Error ? error.message : "Paper storage unavailable"; }
+      let server: Awaited<ReturnType<typeof startDeskServer>>;
+      try {
+        server = await startDeskServer({ host, port, rpc, ...(paper ? { paper } : {}), ...(paperError ? { paperError } : {}), paperDiscoveryIntervalMs: discoveryIntervalMs });
+      } catch (error) { await paper?.close(); throw error; }
+      for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => {
+        server.close(); server.closeIdleConnections(); void paper?.close();
+      });
     const address = server.address();
     const boundPort = typeof address === "object" && address !== null ? address.port : port;
     process.stdout.write(`GPTHEIST DESK — read-only Robinhood Chain watch\nhttp://${sanitizeTerminal(host)}:${boundPort}\nNo wallet. No signing. No live execution.\n`);

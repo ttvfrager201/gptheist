@@ -1,7 +1,7 @@
 import { unknownLaunchEvidence } from "./launch-evidence.js";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { open, rename, unlink } from "node:fs/promises";
+import { open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { ensureSafeAuditDirectory } from "./simulation.js";
 import { PAPER_CONFIG, accountSummary, initialPaperState, quoteProblem, type PaperState } from "./paper.js";
@@ -56,20 +56,53 @@ async function readSafe(path: string): Promise<string> {
   finally { await handle.close(); }
 }
 function code(error: unknown): string | undefined { return error instanceof Error && "code" in error ? String(error.code) : undefined; }
+const LINUX_PROC_TICKS_PER_SECOND = 100;
+async function processIdentity(pid: number): Promise<{ startTicks: string; startedAtMs: number }> {
+  const [processStat, systemStat] = await Promise.all([readFile(`/proc/${pid}/stat`, "utf8"), readFile("/proc/stat", "utf8")]);
+  const fields = processStat.slice(processStat.lastIndexOf(")") + 2).trim().split(/\s+/);
+  const startTicks = fields[19];
+  if (!startTicks || !/^\d+$/.test(startTicks)) throw new Error("Unable to verify paper lock process identity");
+  const bootTime = Number(systemStat.match(/^btime (\d+)$/m)?.[1]);
+  if (!Number.isFinite(bootTime)) throw new Error("Unable to verify paper lock process identity");
+  return { startTicks, startedAtMs: bootTime * 1000 + Number(startTicks) * 1000 / LINUX_PROC_TICKS_PER_SECOND };
+}
 export class PaperStore {
   private tail: Promise<void> = Promise.resolve();
   private constructor(readonly directory: string, private state: PaperState) {}
   static async open(directory: string): Promise<PaperStore> {
     const root = await ensureSafeAuditDirectory(directory), lock = resolve(root, "writer.lock");
-    // Exclusive process ownership; stale locks from a terminated process are recoverable.
+    // Linux process start time distinguishes a restarted container's reused PID from its former owner.
     for (let attempt = 0; attempt < 2; attempt++) {
-      try { const h = await open(lock, "wx", 0o600); try { await h.writeFile(String(process.pid)); await h.sync(); } finally { await h.close(); } break; }
+      try {
+        const { startTicks } = await processIdentity(process.pid);
+        const h = await open(lock, "wx", 0o600);
+        try { await h.writeFile(JSON.stringify({ pid: process.pid, startTicks })); await h.sync(); } finally { await h.close(); }
+        break;
+      }
       catch (error) {
         if (code(error) !== "EEXIST" || attempt !== 0) throw error;
-        const pid = Number(await readSafe(lock));
+        const lockText = await readSafe(lock), lockInfo = await stat(lock);
+        let pid: number, priorStartTicks: string | undefined;
+        try {
+          const parsed: unknown = JSON.parse(lockText);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            const record = parsed as { pid?: unknown; startTicks?: unknown };
+            pid = Number(record.pid);
+            if (typeof record.startTicks === "string" && /^\d+$/.test(record.startTicks)) priorStartTicks = record.startTicks;
+          } else pid = Number(parsed);
+        } catch { pid = Number(lockText); }
         if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid paper lock; inspect writer.lock manually");
-        try { process.kill(pid, 0); throw new Error("Paper account already owned by a running process"); }
-        catch (probe) { if (code(probe) !== "ESRCH") throw probe; }
+        let stale = false;
+        try {
+          process.kill(pid, 0);
+          const identity = await processIdentity(pid);
+          if (priorStartTicks) stale = identity.startTicks !== priorStartTicks;
+          else stale = pid === process.pid && lockInfo.mtimeMs < identity.startedAtMs - 1000;
+          if (!stale) throw new Error("Paper account already owned by a running process");
+        } catch (probe) {
+          if (code(probe) === "ESRCH") stale = true;
+          else throw probe;
+        }
         await unlink(lock);
       }
     }

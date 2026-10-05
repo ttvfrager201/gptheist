@@ -2,7 +2,8 @@ import { enterPaper } from "./liquidity-history-fixture.js";
 import { chronology } from "./paper-fixtures.js";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, utimes, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
@@ -11,6 +12,7 @@ import { AGENTS } from "../src/simulation.js";
 import {  PAPER_CONFIG, accountSummary, initialPaperState, isPaperTradeEligible, markPaperPosition, monitorPaper, performance, quoteProblem, type Candidate, type PaperQuote, type QuoteResult  } from "../src/paper.js";
 import { PaperStore, validatePaperState } from "../src/paper-store.js";
 import { createDeskServer } from "../src/server.js";
+import { startPaperEngine } from "../src/paper-runtime.js";
 
 const now = Date.parse("2026-09-25T12:00:00Z");
 const token = "0x1111111111111111111111111111111111111111";
@@ -177,6 +179,11 @@ test("persistent state survives restart, refuses concurrent writers, and reset o
   await writeFile(join(directory, "research.jsonl"), "research");
   await store.update(s => { enterPaper(s, candidate(), 10, now); });
   await assert.rejects(PaperStore.open(join(directory, "paper")), /owned/);
+  const storeModule = new URL("../src/paper-store.js", import.meta.url).href;
+  const childResult = execFileSync(process.execPath, ["--input-type=module", "-e",
+    `import { PaperStore } from ${JSON.stringify(storeModule)}; try { await PaperStore.open(process.argv[1]); console.log("unexpected writer opened"); } catch (error) { console.log(error.message); }`,
+    join(directory, "paper")], { encoding: "utf8" });
+  assert.equal(childResult.trim(), "Paper account already owned by a running process");
   await store.close(); store = await PaperStore.open(join(directory, "paper"));
   assert.equal(store.read().positions.length, 1); assert.equal(store.read().cash, 990);
   await store.update(async s => { await closeAt(s, .8); });
@@ -184,6 +191,22 @@ test("persistent state survives restart, refuses concurrent writers, and reset o
   assert.equal(store.read().trades[0]?.pnlUsd, -2);
   await store.reset(); assert.equal(store.read().cash, 1000); assert.equal(store.read().trades.length, 0);
   assert.equal(await readFile(join(directory, "research.jsonl"), "utf8"), "research"); await store.close();
+});
+test("stale writer locks recover only after proving their PID owner is gone", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "paper-stale-lock-"));
+  const previous = await PaperStore.open(directory);
+  await previous.close();
+  const lock = join(directory, "writer.lock");
+  await writeFile(lock, String(process.pid));
+  await assert.rejects(PaperStore.open(directory), /already owned/);
+  await utimes(lock, new Date(0), new Date(0));
+  const legacyRecovery = await PaperStore.open(directory);
+  assert.equal(legacyRecovery.read().cash, 1000);
+  await legacyRecovery.close();
+  await writeFile(lock, JSON.stringify({ pid: process.pid, startTicks: "0" }));
+  const recovered = await PaperStore.open(directory);
+  assert.equal(recovered.read().cash, 1000);
+  await recovered.close();
 });
 test("corrupt storage fails closed, and failed transactions do not alter the account", async () => {
   const directory = await mkdtemp(join(tmpdir(), "paper-test-"));
@@ -193,13 +216,24 @@ test("corrupt storage fails closed, and failed transactions do not alter the acc
 });
 test("PAPER route serializes the persisted account and the base account endpoint stays read-only", async t => {
   const directory = await mkdtemp(join(tmpdir(), "paper-api-"));
-  const server = createDeskServer({ paperDirectory: directory, paperUsdFetch: (async () => { throw new Error("offline USD test"); }) as typeof fetch, rpc: async () => { throw new Error("offline test"); } });
+  const seed = await PaperStore.open(directory);
+  await seed.update(state => {
+    state.config.STARTING_BALANCE_USD = 50;
+    state.cash = 50;
+    state.history = [{ timestamp: new Date(now).toISOString(), equity: 50, stalePositions: 0 }];
+  });
+  await seed.close();
+  const paper = await startPaperEngine({ directory, usdFetch: (async () => { throw new Error("offline USD test"); }) as typeof fetch,
+    rpc: async () => { throw new Error("offline test"); } });
+  const server = createDeskServer({ paper });
   server.listen(0, "127.0.0.1"); await once(server, "listening"); t.after(() => server.close());
+  t.after(async () => { await paper.close(); });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const html = await (await fetch(`${base}/paper`)).text();
   for (const label of ["PAPER MODE", "SIMULATED EXECUTION", "NO REAL MONEY", "BALANCE HISTORY", "RESET ACCOUNT \\+ CLEAR HISTORY", "MAXIMUM OPEN TRADES"]) assert.match(html, new RegExp(label));
-  const data = await (await fetch(`${base}/api/paper`)).json() as { mode: string; account: { equity: number }; trades: unknown[] };
-  assert.equal(data.mode, "PAPER"); assert.equal(data.account.equity, 1000); assert.equal(data.trades.length, 0);
+  const data = await (await fetch(`${base}/api/paper`)).json() as { mode: string; account: { equity: number; startingBalance: number }; trades: unknown[]; history: unknown[] };
+  assert.equal(data.mode, "PAPER"); assert.equal(data.account.equity, 50); assert.equal(data.account.startingBalance, 50);
+  assert.equal(data.trades.length, 0); assert.equal(data.history.length, 1);
   assert.equal((await fetch(`${base}/api/paper`, { method: "POST" })).status, 405);
 });
 
@@ -213,9 +247,11 @@ test("paper controls update the open-trade limit and reset visible account histo
       tokenSymbol: "TEST", eventType: "TEST_HISTORY", message: "test only", metadata: {} });
   });
   await seeded.close();
-  const server = createDeskServer({ paperDirectory: directory, paperUsdFetch: (async () => { throw new Error("offline USD test"); }) as typeof fetch,
+  const paper = await startPaperEngine({ directory, usdFetch: (async () => { throw new Error("offline USD test"); }) as typeof fetch,
     rpc: async () => { throw new Error("offline test"); } });
+  const server = createDeskServer({ paper });
   server.listen(0, "127.0.0.1"); await once(server, "listening"); t.after(() => server.close());
+  t.after(async () => { await paper.close(); });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const update = (path: string, body: unknown, origin = base) => fetch(`${base}${path}`, {
     method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify(body)
