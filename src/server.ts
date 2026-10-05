@@ -4,8 +4,6 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_RPC_URL, ROBINHOOD_CHAIN_ID, fetchLiveSnapshot, createLiveDiscoveryCache, type LiveSnapshot, type RpcCaller } from "./live.js";
 
-import { PaperQuoteService } from "./paper-quotes.js";
-import { PaperStore } from "./paper-store.js";
 import { PaperService } from "./paper-service.js";
 
 async function readJsonBody(request: import("node:http").IncomingMessage): Promise<unknown> {
@@ -35,16 +33,15 @@ const SECURITY_HEADERS = {
 } as const;
 
 export interface DeskServerOptions {
-  paperDirectory?: string;
+  paper?: PaperService;
+  paperError?: string | null;
   paperDiscoveryIntervalMs?: number;
-  paperLog?: (message: string) => void;
   rpc?: RpcCaller;
   rpcUrl?: string;
   assetsRoot?: string;
   cacheMs?: number;
   failureCacheMs?: number;
   socialFetch?: typeof fetch;
-  paperUsdFetch?: typeof fetch;
 }
 
 export interface RpcCallerOptions {
@@ -144,16 +141,8 @@ export function createDeskServer(options: DeskServerOptions = {}): Server {
     }
     return pending;
   };
-  let paper: PaperService | undefined;
-  let paperError: string | null = null;
-  const paperReady = options.paperDirectory ? PaperStore.open(options.paperDirectory).then(store => {
-    const quotes = new PaperQuoteService(rpc, store.read().config, options.paperUsdFetch);
-    paper = new PaperService(store, snapshot, position => quotes.sell(position),
-      (launch, sizeUsd) => quotes.buy(launch, sizeUsd), quotes, Date.now, rpc, { discoveryIntervalMs: options.paperDiscoveryIntervalMs, log: options.paperLog }); paper.start();
-  }).catch((error: unknown) => {
-    paperError = error instanceof Error ? error.message : "Paper storage unavailable";
-    try { options.paperLog?.(`PAPER startup error: ${paperError}`); } catch { /* Logging must not change startup failure handling. */ }
-  }) : Promise.resolve();
+  const paper = options.paper;
+  const paperError = options.paperError ?? null;
   const assets: Record<string, [string, string]> = {
     "/paper": ["paper.html", "text/html; charset=utf-8"],
     "/paper.js": ["paper.js", "text/javascript; charset=utf-8"],
@@ -175,7 +164,6 @@ export function createDeskServer(options: DeskServerOptions = {}): Server {
       const requestUrl = new URL(request.url ?? "/", "http://localhost");
       const path = requestUrl.pathname;
       if (path === "/api/paper/settings" || path === "/api/paper/reset") {
-        await paperReady;
         if (!paper) { send(response, 503, "application/json; charset=utf-8", JSON.stringify({ error: paperError ?? "Paper service not configured" })); return; }
         if (request.method !== "POST") { send(response, 405, "application/json; charset=utf-8", JSON.stringify({ error: "method not allowed" })); return; }
         if (!isSameOrigin(request)) { send(response, 403, "application/json; charset=utf-8", JSON.stringify({ error: "same-origin request required" })); return; }
@@ -216,7 +204,6 @@ export function createDeskServer(options: DeskServerOptions = {}): Server {
         return;
       }
       if (path === "/api/paper") {
-        await paperReady;
         send(response, paper ? 200 : 503, "application/json; charset=utf-8", JSON.stringify(paper ? paper.view() : { mode: "PAPER", error: paperError ?? "Paper service not configured" }));
         return;
       }
@@ -289,12 +276,11 @@ export function createDeskServer(options: DeskServerOptions = {}): Server {
       send(response, 500, "text/plain; charset=utf-8", "Internal error\n");
     }
   });
-  server.once("close", () => { void paperReady.then(() => paper?.close()).catch(() => undefined); });
   return server;
 }
 
 export async function startDeskServer(options: DeskServerOptions & { host?: string; port?: number } = {}): Promise<Server> {
-  const server = createDeskServer({ ...options, paperDirectory: options.paperDirectory ?? resolve(process.cwd(), "runs/paper") });
+  const server = createDeskServer(options);
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 4173;
   server.listen(port, host);

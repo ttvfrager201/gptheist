@@ -6,6 +6,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDeskServer, createHttpRpcCaller } from "../src/server.js";
+import { startPaperEngine } from "../src/paper-runtime.js";
 import { TOKEN_LAUNCHED_TOPIC } from "../src/live.js";
 
 const word = (value: string): string => value.replace(/^0x/, "").padStart(64, "0");
@@ -15,14 +16,18 @@ test("paper startup failures are printed and remain unavailable instead of silen
   const previous = process.env.PAPER_STRATEGY_MODE, messages: string[] = [];
   const directory = await mkdtemp(join(tmpdir(), "paper-startup-log-"));
   process.env.PAPER_STRATEGY_MODE = "INVALID";
-  const server = createDeskServer({ paperDirectory: directory, paperLog: message => { messages.push(message); }, rpc: fakeRpc });
+  let paperError: string | undefined;
+  let server: ReturnType<typeof createDeskServer> | undefined;
   try {
+    try { await startPaperEngine({ directory, rpc: fakeRpc, log: message => { messages.push(message); } }); }
+    catch (error) { paperError = error instanceof Error ? error.message : "Paper startup failed"; }
+    server = createDeskServer({ ...(paperError ? { paperError } : {}), rpc: fakeRpc });
     server.listen(0, "127.0.0.1"); await once(server, "listening");
     const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/paper`);
     assert.equal(response.status, 503);
     assert.ok(messages.some(message => message.includes("PAPER startup error:") && message.includes("STRICT or SCALP")));
   } finally {
-    server.close(); server.closeIdleConnections();
+    if (server) { server.close(); server.closeIdleConnections(); }
     if (previous === undefined) delete process.env.PAPER_STRATEGY_MODE; else process.env.PAPER_STRATEGY_MODE = previous;
   }
 });
