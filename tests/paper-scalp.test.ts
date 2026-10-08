@@ -152,7 +152,7 @@ test("changing entry mode preserves saved position exits and the account", async
     await store?.close();
     if (previous === undefined) delete process.env.PAPER_STRATEGY_MODE; else process.env.PAPER_STRATEGY_MODE = previous;
   }
-  assert.throws(() => initialPaperState(s.now, { ...PAPER_CONFIG, PAPER_STRATEGY_VERSION: 5 }), /configuration/);
+  assert.throws(() => initialPaperState(s.now, { ...PAPER_CONFIG, PAPER_STRATEGY_VERSION: 6 }), /configuration/);
 });
 
 test("small scalp account rejects before any bootstrap or entry network quotes", async()=>{

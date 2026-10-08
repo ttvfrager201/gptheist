@@ -1,3 +1,5 @@
+import { timingSafeEqual } from "node:crypto";
+import { WorkLimiter, runtimeLimits, registerRpcLimiter } from "./runtime-limits.js";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -63,7 +65,8 @@ export function createHttpRpcCaller(url?: string, options: RpcCallerOptions = {}
     DEFAULT_RPC_URL
   ]).map((value) => ({ url: value.replace(/#nologs$/, ""), logs: !value.endsWith("#nologs") }));
   const sleep = (milliseconds: number): Promise<void> => new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
-  return async (method, params = []) => {
+  const limiter = new WorkLimiter(runtimeLimits.rpcConcurrency,runtimeLimits.pendingRpc,15_000,Math.min(2,runtimeLimits.rpcConcurrency-1));
+  const call: RpcCaller = async (method, params = []) => {
     if (!["eth_chainId", "eth_gasPrice", "eth_blockNumber", "eth_getLogs", "eth_call", "eth_getBlockByNumber"].includes(method)) throw new Error("RPC method is outside the read-only allowlist");
     const candidates = endpoints.filter((endpoint) => method !== "eth_getLogs" || endpoint.logs);
     if (candidates.length === 0) throw new Error("No configured RPC endpoint supports eth_getLogs");
@@ -110,6 +113,8 @@ export function createHttpRpcCaller(url?: string, options: RpcCallerOptions = {}
     }
     throw new Error(`${method} failed after bounded retries: ${lastError}`);
   };
+  const bounded: RpcCaller = (method, params = []) => limiter.run(() => call(method, params));
+  registerRpcLimiter(bounded,limiter); return bounded;
 }
 
 function send(response: ServerResponse, status: number, type: string, body: string): void {
@@ -227,6 +232,26 @@ export function createDeskServer(options: DeskServerOptions = {}): Server {
         send(response, 405, "application/json; charset=utf-8", JSON.stringify({ error: "method not allowed" }));
         return;
       }
+      if (path === "/api/paper/export") {
+        const secret = process.env.PAPER_EXPORT_TOKEN;
+        const supplied = request.headers.authorization ?? "";
+        const expected = `Bearer ${secret ?? ""}`;
+        if (!secret || supplied.length !== expected.length || !timingSafeEqual(Buffer.from(supplied),Buffer.from(expected))) {
+          send(response,403,"application/json",JSON.stringify({error:"Export authorization required"})); return;
+        }
+        if (request.method !== "GET") { send(response,405,"application/json",JSON.stringify({error:"GET required"})); return; }
+        await paperReady;
+        if (!paper) { send(response,503,"application/json",JSON.stringify({error:"Paper unavailable"})); return; }
+        response.writeHead(200,{...SECURITY_HEADERS,"content-type":"application/x-ndjson","cache-control":"no-store"});
+        for await (const record of paper.store.exportRecords()) {
+          if (response.destroyed) return;
+          if (!response.write(JSON.stringify(record)+"\n")) await new Promise<void>(resolve=>{
+            response.once("drain",done); response.once("close",done);
+            function done() { response.off("drain",done); response.off("close",done); resolve(); }
+          });
+        }
+        response.end(); return;
+      }
       if (path === "/api/paper/trades") {
         await paperReady;
         if (!paper) { send(response,503,"application/json; charset=utf-8",JSON.stringify({error:paperError??"Paper unavailable"})); return; }
@@ -239,7 +264,7 @@ export function createDeskServer(options: DeskServerOptions = {}): Server {
         return;
       }
       if (path === "/health") {
-        send(response, 200, "application/json; charset=utf-8", JSON.stringify({ status: "ok", mode: "read-only", chainId: ROBINHOOD_CHAIN_ID }));
+        send(response, 200, "application/json; charset=utf-8", JSON.stringify({ status: paperError || paper?.store.status().error || (paper?.health().memory.pressure === "CRITICAL") ? "degraded" : "ok", mode: "read-only", chainId: ROBINHOOD_CHAIN_ID, ...(paper ? {paper:paper.health()} : {}) }));
         return;
       }
       if (path === "/api/social") {
@@ -306,6 +331,7 @@ export function createDeskServer(options: DeskServerOptions = {}): Server {
       }
       send(response, 200, asset[1], await readFile(resolve(root, asset[0]), "utf8"));
     } catch {
+      if(response.headersSent) { response.destroy(); return; }
       send(response, 500, "text/plain; charset=utf-8", "Internal error\n");
     }
   });
@@ -320,7 +346,7 @@ export function createDeskServer(options: DeskServerOptions = {}): Server {
 }
 
 export async function startDeskServer(options: DeskServerOptions & { host?: string; port?: number } = {}): Promise<Server> {
-  const server = createDeskServer({ ...options, paperDirectory: options.paperDirectory ?? resolve(process.cwd(), "runs/paper") });
+  const server = createDeskServer({ ...options, paperDirectory: options.paperDirectory ?? process.env.PAPER_DATA_DIR ?? resolve(process.cwd(), "runs/paper") });
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 4173;
   if (server.listening) return server;

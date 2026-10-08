@@ -1,3 +1,4 @@
+import { LiquiditySurvivalGate, AdaptiveProfitExit, type SurvivalResult } from "./paper-v5.js";
 import { getPaperStrategy, entryPolicyConfig, PAPER_SCALP_STRATEGY, entryQuality, entryExecutionQuality, roundTripLossPercent, type EntryQuality, type EntryExecutionQuality } from "./paper-strategy.js";
 import { sellObservation, ExitLiquiditySafetyGate, type LiquiditySafety } from "./paper-liquidity.js";
 import { quoteProblem, type Candidate, type PaperQuote, type PaperState, type Position } from "./paper.js";
@@ -16,7 +17,7 @@ export interface ExitPolicy {
   reasons: string[];
 }
 export interface PaperTradePlan {
-  strategyVersion?: number; entryQuality?: EntryQuality; entryExecutionQuality?: EntryExecutionQuality;
+  survival?: SurvivalResult; strategyVersion?: number; entryQuality?: EntryQuality; entryExecutionQuality?: EntryExecutionQuality;
   exitLiquiditySafety?: LiquiditySafety;
   version: 1; createdAt: string; experimental: true;
   gptheistVerdict: "WATCH"; paperVerdict: "PAPER_ELIGIBLE";
@@ -30,10 +31,11 @@ export interface PaperTradePlan {
   entryQuote: PaperQuote; sources: string[]; reasoning: string[];
 }
 export const EXIT_REASONS = ["DYNAMIC_RISK_EXIT", "PROFIT_PROTECTION", "TRAILING_EXIT", "MAX_HOLD_EXIT",
-  "SIGNAL_DETERIORATION", "TAX_CHANGE", "LIQUIDITY_OR_QUOTE_DETERIORATION", "GRADUATION_TRANSITION", "STAGNATION_EXIT", "SCALP_TAKE_PROFIT"] as const;
+  "SIGNAL_DETERIORATION", "TAX_CHANGE", "LIQUIDITY_OR_QUOTE_DETERIORATION", "GRADUATION_TRANSITION", "STAGNATION_EXIT", "SCALP_TAKE_PROFIT", "RESERVE_DRAWDOWN", "RAPID_RESERVE_OUTFLOW", "EXECUTABLE_PRICE_COLLAPSE", "EXIT_COVERAGE_FAILURE", "EXIT_PARTICIPATION_BREACH", "INSUFFICIENT_REAL_EXIT_RESERVE", "SELL_QUOTE_UNAVAILABLE", "SELL_QUOTE_STALE", "ADAPTIVE_PROFIT_EXIT", "MULTIPLE_TRIGGERS"] as const;
 export type ExitReason = typeof EXIT_REASONS[number];
 export interface ExitDecision { reason: ExitReason; reasoning: string[]; triggeredAt: string }
 export interface Management {
+  adaptive?: { netLiquidationUsd: number; peakNetLiquidationUsd: number; armed: boolean; strongMomentum: boolean; trailingPercent: number; profitFloorPercent: number };
   liquidity?: LiquiditySafety; exitExecutionStatus?: "EXECUTABLE" | "EXIT_TRIGGERED_BUT_UNEXECUTABLE";
   excursionTrackingSince?: string; entryLiquidationValueUsd?: number; mfePercent?: number; maePercent?: number; state?: "RISK" | "RUNNER" | "PROFIT_PROTECTION";
   peakLiquidationValueUsd: number | null; peakReturnPercent: number | null; peakTimestamp: string | null;
@@ -104,6 +106,11 @@ export function proposeTradePlan(state: PaperState, candidate: Candidate, quote:
   };
   const riskPercent = scalp ? Math.max(state.config.MAX_RISK_EQUITY_PERCENT, Math.min(.5, policy.maxTokenExposurePercent * .1)) : state.config.MAX_RISK_EQUITY_PERCENT;
   const riskBudgetUsd = account.equityUsd * riskPercent / 100 * (1 - .75 * riskScore);
+  if(policy.version===5) {
+    exitPolicy.downsidePercent=5; exitPolicy.profitArmPercent=2; exitPolicy.trailingDrawdownPercent=3;
+    exitPolicy.reserveDropPercent=8; exitPolicy.maxHoldMs=Math.min(state.config.MAX_HOLD_MS,policy.maxHoldMs);
+    exitPolicy.reasons.push("V5 adaptive executable-profit trail; 2% equity gap exposure cap; reserve emergencies remain immediate");
+  }
   const entryGasUsd = quote.costs.gasUsd ?? 0;
   const proposedSizeUsd = cents(Math.min(account.availableCapacityUsd - entryGasUsd, riskBudgetUsd / (downsidePercent / 100) - entryGasUsd,
     account.equityUsd * policy.maxTokenExposurePercent / 100 - entryGasUsd,
@@ -111,7 +118,7 @@ export function proposeTradePlan(state: PaperState, candidate: Candidate, quote:
     quote.liquidityUsd / state.config.MIN_EXIT_COVERAGE_RATIO,
     quote.liquidityUsd * state.config.MAX_EXIT_PARTICIPATION_BPS / 10_000));
   const exitObservation = quote.roundTrip ? sellObservation(quote.roundTrip.sell, quote.notionalUsd) : null;
-  return { strategyVersion: policy.version, entryExecutionQuality: entryExecutionQuality(quote, state.liquidityHistory?.[candidate.launchId] ?? [], now, policy), entryQuality: entryQuality(candidate, quote, now, policy), ...(exitObservation ? { exitLiquiditySafety: ExitLiquiditySafetyGate(exitObservation, state.liquidityHistory?.[candidate.launchId] ?? [], entryPolicyConfig(state.config)) } : {}), version: 1, createdAt: new Date(now).toISOString(), experimental: true, gptheistVerdict: "WATCH", paperVerdict: "PAPER_ELIGIBLE",
+  return { ...(policy.version===5 ? {survival:LiquiditySurvivalGate(candidate,quote,state,now)} : {}), strategyVersion: policy.version, entryExecutionQuality: entryExecutionQuality(quote, state.liquidityHistory?.[candidate.launchId] ?? [], now, policy), entryQuality: entryQuality(candidate, quote, now, policy), ...(exitObservation ? { exitLiquiditySafety: ExitLiquiditySafetyGate(exitObservation, state.liquidityHistory?.[candidate.launchId] ?? [], entryPolicyConfig(state.config)) } : {}), version: 1, createdAt: new Date(now).toISOString(), experimental: true, gptheistVerdict: "WATCH", paperVerdict: "PAPER_ELIGIBLE",
     riskClass, riskScore, riskReasons, riskBudgetUsd, proposedSizeUsd, approvedSizeUsd: 0, account,
     inputs: { palermoScore, curveProgressBps: progress, creatorTaxBps: e?.creatorTaxBps ?? null,
       snipeTaxBps: e?.snipeTaxBps ?? null, protocolFeeBps: e?.feeBps ?? null, impactPercent: impact,
@@ -129,6 +136,7 @@ export function initialManagement(): Management {
     holdReason: "Awaiting first full-size sell quote", pendingExit: null };
 }
 export function evaluateExit(position: Position, now: number): ExitDecision | null {
+  if(position.plan.strategyVersion===5) return AdaptiveProfitExit(position,now);
   const p = position, policy = p.plan.exitPolicy, q = p.current;
   const value = q.notionalUsd - (q.costs.gasUsd ?? 0);
   const ret = (value / p.costBasisUsd - 1) * 100;

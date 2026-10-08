@@ -20,7 +20,7 @@ test("paper startup failures are printed and remain unavailable instead of silen
     server.listen(0, "127.0.0.1"); await once(server, "listening");
     const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/paper`);
     assert.equal(response.status, 503);
-    assert.ok(messages.some(message => message.includes("PAPER startup error:") && message.includes("STRICT or SCALP")));
+    assert.ok(messages.some(message => message.includes("PAPER startup error:") && message.includes("STRICT, SCALP or V5")));
   } finally {
     server.close(); server.closeIdleConnections();
     if (previous === undefined) delete process.env.PAPER_STRATEGY_MODE; else process.env.PAPER_STRATEGY_MODE = previous;

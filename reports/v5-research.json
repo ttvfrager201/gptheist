@@ -1,0 +1,18 @@
+{
+  "source": "runs/scalp-v4/current-tape.json",
+  "provenance": "Local retained artifact; not verified as current Railway account or a newly recovered production backup",
+  "trades": 9,
+  "quotes": 100,
+  "capturedAt": "2026-10-04T20:44:17.207Z",
+  "completeChronologicalMarketFrames": false,
+  "v5ProfitabilityVerified": false,
+  "comparisonStatus": "INCOMPLETE: the nine retained entries are V3, not a measured V4 cohort; no full candidate arrival tape, alternative exact sized quotes, or post-original-exit observations",
+  "metrics": {
+    "V4": "Unavailable as a verified production cohort",
+    "V5": "No complete replay; unavailable"
+  },
+  "retainedStrategyVersions": [
+    3
+  ],
+  "postOriginalExitQuoteCoverage": 0
+}

@@ -1,0 +1,118 @@
+{
+  "syntheticInfrastructureOnly": true,
+  "containerLimitEnforced": false,
+  "cgroupMemoryMax": "max\n",
+  "nodeHeapLimitMiB": 384,
+  "durationMs": 61050,
+  "cycles": 440,
+  "launches": 5280,
+  "networkFailures": 118,
+  "restarts": 1,
+  "initial": {
+    "rss": 89276416,
+    "heapTotal": 55877632,
+    "heapUsed": 19332008,
+    "external": 2466583,
+    "arrayBuffers": 211619
+  },
+  "peakRss": 440827904,
+  "sustainedRss": 431504237.71428573,
+  "final": {
+    "rss": 430641152,
+    "heapTotal": 270929920,
+    "heapUsed": 156527088,
+    "external": 2398345,
+    "arrayBuffers": 145939,
+    "pressure": "NORMAL",
+    "eventLoopDelayMs": 109.559808,
+    "elapsedMs": 61032,
+    "counts": {
+      "activeCandidates": 128,
+      "candidateObservations": 12800,
+      "processedTokens": 384,
+      "quoteRecords": 315,
+      "activityEvents": 200,
+      "openPositions": 5,
+      "closedTrades": 100,
+      "equityRecords": 250
+    }
+  },
+  "peakPending": 32,
+  "peakCandidates": 128,
+  "limits": {
+    "candidates": 128,
+    "observations": 100,
+    "rejections": 100,
+    "quoteSamples": 128,
+    "rpcConcurrency": 6,
+    "pendingRpc": 128
+  },
+  "samples": [
+    {
+      "rss": 259743744,
+      "heapTotal": 210509824,
+      "heapUsed": 83832616,
+      "external": 12484740,
+      "arrayBuffers": 10229736,
+      "pressure": "NORMAL",
+      "eventLoopDelayMs": 74.28232533333333,
+      "elapsedMs": 3319,
+      "counts": {
+        "activeCandidates": 128,
+        "candidateObservations": 12800,
+        "processedTokens": 240,
+        "quoteRecords": 325,
+        "activityEvents": 200,
+        "openPositions": 5,
+        "closedTrades": 100,
+        "equityRecords": 111
+      }
+    },
+    {
+      "rss": 428208128,
+      "heapTotal": 257036288,
+      "heapUsed": 156778600,
+      "external": 2398345,
+      "arrayBuffers": 145939,
+      "pressure": "NORMAL",
+      "eventLoopDelayMs": 119.52128,
+      "elapsedMs": 30960,
+      "counts": {
+        "activeCandidates": 128,
+        "candidateObservations": 12800,
+        "processedTokens": 384,
+        "quoteRecords": 315,
+        "activityEvents": 200,
+        "openPositions": 5,
+        "closedTrades": 100,
+        "equityRecords": 250
+      }
+    },
+    {
+      "rss": 430792704,
+      "heapTotal": 262017024,
+      "heapUsed": 161683872,
+      "external": 2398345,
+      "arrayBuffers": 145939,
+      "pressure": "NORMAL",
+      "eventLoopDelayMs": 88.26333866666667,
+      "elapsedMs": 58463,
+      "counts": {
+        "activeCandidates": 128,
+        "candidateObservations": 12800,
+        "processedTokens": 384,
+        "quoteRecords": 315,
+        "activityEvents": 200,
+        "openPositions": 5,
+        "closedTrades": 100,
+        "equityRecords": 250
+      }
+    }
+  ],
+  "acceptance": {
+    "rssBelow500MiB": true,
+    "sustainedBelow650MiB": true,
+    "activePositionsPreserved": true,
+    "queueDrained": true
+  }
+}

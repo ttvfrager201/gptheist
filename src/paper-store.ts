@@ -61,6 +61,9 @@ function code(error: unknown): string | undefined { return error instanceof Erro
 export class PaperStore {
   private tail: Promise<void> = Promise.resolve();
   private closed = false;
+  private lastSuccessfulWrite: string | null = null;
+  private writeError: string | null = null;
+  private pendingUpdates = 0;
   private constructor(readonly directory: string, private state: PaperState, private readonly ownership: FileHandle, private readonly retentionClock: () => number) {}
   static async open(directory: string, retentionClock: () => number = Date.now): Promise<PaperStore> {
     const root = await ensureSafeAuditDirectory(directory), lock = resolve(root, "writer.lock");
@@ -122,7 +125,9 @@ export class PaperStore {
           try { await backup.writeFile(text); await backup.sync(); } finally { await backup.close(); }
         } else { validatePaperState(raw); state = raw; }
       }
-      catch (error) { if (code(error) !== "ENOENT") throw error; state = initialPaperState(); }
+      catch (error) { if (code(error) !== "ENOENT") throw error; if ((process.env.RAILWAY_ENVIRONMENT_ID || process.env.PAPER_DATA_DIR || process.env.PAPER_REQUIRE_EXPLICIT_INIT === "true") && process.env.PAPER_INITIALIZE_NEW_ACCOUNT !== "true")
+          throw new Error("Missing paper state: restore backup or explicitly initialize with PAPER_INITIALIZE_NEW_ACCOUNT=true; refusing silent reset");
+        state = initialPaperState(); }
       for (const c of [...state.decisions.map(d => d.candidate), ...state.positions.map(p => p.candidate), ...state.trades.map(t => t.candidate)]) {
         if (c.launchTimestamp === undefined) Object.assign(c, unknownLaunchEvidence(c.launch?.blockNumber ?? 0));
       }
@@ -137,8 +142,8 @@ export class PaperStore {
       }
       if (process.env.PAPER_STRATEGY_MODE !== undefined) {
         const mode = process.env.PAPER_STRATEGY_MODE;
-        if (!["STRICT", "SCALP"].includes(mode)) throw new Error("PAPER_STRATEGY_MODE must be STRICT or SCALP");
-        state.config.PAPER_STRATEGY_VERSION = mode === "SCALP" ? 4 : 3;
+        if (!["STRICT", "SCALP", "V5"].includes(mode)) throw new Error("PAPER_STRATEGY_MODE must be STRICT, SCALP or V5");
+        state.config.PAPER_STRATEGY_VERSION = mode === "V5" ? 5 : mode === "SCALP" ? 4 : 3;
       }
       for (const key of ["MIN_REAL_EXIT_RESERVE_ETH", "MIN_EXIT_COVERAGE_RATIO", "MAX_EXIT_PARTICIPATION_BPS", "LIQUIDITY_OBSERVATION_COUNT", "LIQUIDITY_OBSERVATION_MIN_MS", "LIQUIDITY_OBSERVATION_WINDOW_MS", "MAX_LIQUIDITY_DROP_PERCENT"] as const) {
         if (process.env[key] !== undefined) state.config[key] = Number(process.env[key]);
@@ -153,6 +158,21 @@ export class PaperStore {
     if (!/^audit-archive-\d+-[0-9a-f-]+\.json$/.test(name)) throw new Error("Invalid history cursor");
     const record = JSON.parse(await readSafe(resolve(this.directory,name))) as { trades?: PaperState["trades"]; previousTrades?: string | null };
     return { trades: record.trades ?? [], next: record.previousTrades ?? null };
+  }
+  status() { return { directory: this.directory, lastSuccessfulWrite: this.lastSuccessfulWrite, error: this.writeError, pendingUpdates: this.pendingUpdates, singleWriter: !this.closed }; }
+  /** Consistent state plus immutable referenced archives, streamed one record at a time. No credentials. */
+  async *exportRecords(): AsyncGenerator<{ name: string; data: unknown }> {
+    await this.tail;
+    const state = this.read();
+    yield { name: "state.json", data: state };
+    const seen = new Set<string>();
+    let cursor = state.archiveHead;
+    while (cursor) {
+      if (seen.has(cursor) || !/^audit-archive-\d+-[0-9a-f-]+\.json$/.test(cursor)) throw new Error("Invalid archive chain");
+      seen.add(cursor);
+      const record = JSON.parse(await readSafe(resolve(this.directory,cursor))) as { previous?: string };
+      yield { name: cursor, data: record }; cursor = record.previous;
+    }
   }
   read(): PaperState { return structuredClone(this.state); }
   private async write(state: PaperState): Promise<void> {
@@ -176,10 +196,13 @@ export class PaperStore {
     try { await h.writeFile(JSON.stringify(state)); await h.sync(); } finally { await h.close(); }
     await rename(temp, resolve(this.directory, "state.json"));
     const dir = await open(this.directory, "r"); try { await dir.sync(); } finally { await dir.close(); }
+    this.lastSuccessfulWrite = new Date().toISOString(); this.writeError = null;
   }
   update(fn: (state: PaperState) => void | Promise<void>): Promise<void> {
     if (this.closed) return Promise.reject(new Error("Paper store is closed"));
-    const work = this.tail.then(async () => { const next = this.read(); await fn(next); await this.write(next); this.state = next; });
+    if (this.pendingUpdates >= 128) return Promise.reject(new Error("Persistence backpressure"));
+    this.pendingUpdates++;
+    const work = this.tail.then(async () => { const next = this.read(); await fn(next); await this.write(next); this.state = next; }).catch(error => { this.writeError = error instanceof Error ? error.message.slice(0,200) : "Persistence failed"; throw error; }).finally(()=>{this.pendingUpdates--;});
     this.tail = work.catch(() => undefined); return work;
   }
   async setMaxOpenPositions(maxOpenPositions: number): Promise<void> {

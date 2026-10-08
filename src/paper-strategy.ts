@@ -99,7 +99,16 @@ export const PAPER_SCALP_STRATEGY = Object.freeze({ ...PAPER_STRATEGY_V3, versio
   profitFloorPercent: .5, stagnationMs: 30_000, maxHoldMs: 90_000, lossStreakPauseMs: 180_000,
   takeProfitPercent: 3, profitArmPercent: 1.5, trailingDrawdownPercent: 1.25, maxDownsidePercent: 6
 });
+/** One experimental V5 profile; gap exposure capped independently of stop distance. */
+export const PAPER_V5_STRATEGY = Object.freeze({ ...PAPER_STRATEGY_V3, version: 5,
+  maxTokenExposurePercent: 2, maxRoundTripLossPercent: 3, minRealReserveShareBps: 3000,
+  confirmationSamples: 3, recentSamples: 5, minReserveGrowthPercent: 1,
+  minLatestReserveGrowthPercent: .25, minPositiveStepRatio: .75, maxReserveDrawdownPercent: 2,
+  profitFloorPercent: .5, profitArmPercent: 2, trailingDrawdownPercent: 3,
+  stagnationMs: 60_000, maxHoldMs: 180_000, maxDownsidePercent: 5
+});
 export function getPaperStrategy(config: Pick<PaperConfig, "PAPER_STRATEGY_VERSION">, equityUsd?: number): PaperStrategyPolicy {
+  if (config.PAPER_STRATEGY_VERSION === 5) return PAPER_V5_STRATEGY;
   if (config.PAPER_STRATEGY_VERSION === 4) return equityUsd !== undefined && Number.isFinite(equityUsd) && equityUsd > 0
     ? { ...PAPER_SCALP_STRATEGY, maxTokenExposurePercent: Math.max(PAPER_SCALP_STRATEGY.maxTokenExposurePercent, Math.min(5, 250 / equityUsd)) }
     : PAPER_SCALP_STRATEGY;

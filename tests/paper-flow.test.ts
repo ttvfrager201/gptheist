@@ -2,7 +2,7 @@ import { seedLiquidityHistory, seedTractionHistory } from "./liquidity-history-f
 import { enterPaper, observeSnapshot } from "./liquidity-history-fixture.js";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type LiveLaunchDecision } from "../src/live.js";
@@ -256,7 +256,10 @@ test("cached snapshots do not repeat entry work or whole-account discovery write
     await service.tick();
     assert.deepEqual(store.read(), before);
     assert.equal(before.events.filter(e => e.eventType === "PAPER_LAB_FRAME").length, 0);
-    assert.ok(before.archiveHead, "Raw research frame is archived instead of retained");
+    const researchFiles=await readdir(join(store.directory,"research"));
+    assert.equal(researchFiles.length,1,"Raw research frame uses bounded separate tape");
+    const frames=(await readFile(join(store.directory,"research",researchFiles[0]!),"utf8")).trim().split("\n");
+    assert.equal(frames.length,1,"Cached snapshots do not record duplicate frames");
     assert.equal(service.view().connection, "LIVE");
   } finally { await service.close(); }
 });

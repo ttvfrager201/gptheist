@@ -1,0 +1,143 @@
+src/live.ts:56:export function decodeTokenLaunchedLog(log: RpcLog): LiveLaunch | null {
+src/live.ts:118:export async function refreshLiveLaunchAtHead(rpc: RpcCaller, launch: LiveLaunchDecision, headBlock: number): Promise<LiveLaunchDecision> {
+src/live.ts:123:export async function refreshLiveLaunchesAtHead(rpc: RpcCaller, launches: LiveLaunchDecision[], headBlock: number): Promise<LiveLaunchDecision[]> {
+src/live.ts:210:export function createLiveDiscoveryCache(): LiveDiscoveryCache {
+src/live.ts:214:export async function fetchLiveSnapshot(rpc: RpcCaller, options: { blockWindow?: number; discoveryCache?: LiveDiscoveryCache } = {}): Promise<LiveSnapshot> {
+src/paper-store.ts:14:export function validatePaperState(value: unknown): asserts value is PaperState {
+src/paper-store.ts:61:export class PaperStore {
+src/paper-store.ts:62:  private tail: Promise<void> = Promise.resolve();
+src/paper-store.ts:63:  private closed = false;
+src/paper-store.ts:64:  private lastSuccessfulWrite: string | null = null;
+src/paper-store.ts:65:  private writeError: string | null = null;
+src/paper-store.ts:66:  private pendingUpdates = 0;
+src/paper-store.ts:67:  private constructor(readonly directory: string, private state: PaperState, private readonly ownership: FileHandle, private readonly retentionClock: () => number) {}
+src/paper-store.ts:68:  static async open(directory: string, retentionClock: () => number = Date.now): Promise<PaperStore> {
+src/paper-store.ts:155:  async historicalTrades(cursor?: string): Promise<{ trades: PaperState["trades"]; next: string | null }> {
+src/paper-store.ts:164:  async *exportRecords(): AsyncGenerator<{ name: string; data: unknown }> {
+src/paper-store.ts:178:  private async write(state: PaperState): Promise<void> {
+src/paper-store.ts:208:  async setMaxOpenPositions(maxOpenPositions: number): Promise<void> {
+src/paper-store.ts:218:  async reset(settings: { startingBalanceUsd?: number } = {}): Promise<void> {
+src/paper-store.ts:229:  async close(): Promise<void> { if (this.closed) return; this.closed = true; await this.tail; await this.ownership.close(); }
+src/paper-store.ts:233:export function migratePaperState(value: unknown): PaperState {
+src/paper-v5.ts:10:export function LiquiditySurvivalGate(candidate: Candidate, q: PaperQuote, state: PaperState, now: number): SurvivalResult {
+src/paper-v5.ts:51:export function v5RiskTriggers(p: Position, current: LiquidityObservation, previous?: LiquidityObservation): { reason: ExitReason; predicate: string }[] {
+src/paper-v5.ts:70:export function AdaptiveProfitExit(p: Position, now: number): ExitDecision | null {
+src/paper-retention.ts:8:export function candidateLifecycle(state: PaperState, id: string, now: number): CandidateLifecycle {
+src/paper-retention.ts:19:export function retainPaperState(state: PaperState, now = Date.now()) {
+src/paper-retention.ts:86:export function collectionCounts(state: PaperState) {
+src/paper-service.ts:18:export class PaperService {
+src/paper-service.ts:19:  private readonly forward: ForwardRecorder;
+src/paper-service.ts:20:  private readonly memoryHealth = new MemoryHealth();
+src/paper-service.ts:21:  private memory = this.memoryHealth.sample();
+src/paper-service.ts:23:  private memoryTimer: ReturnType<typeof setInterval> | undefined;
+src/paper-service.ts:24:  private timer: ReturnType<typeof setTimeout> | undefined;
+src/paper-service.ts:25:  private pending: Promise<void> | undefined;
+src/paper-service.ts:26:  private monitorTimer: ReturnType<typeof setTimeout> | undefined;
+src/paper-service.ts:27:  private readonly failureStates = new Map<string,string>();
+src/paper-service.ts:28:  private readonly logTimes = new Map<string,number>();
+src/paper-service.ts:29:  private readonly retryAfter = new Map<string, number>();
+src/paper-service.ts:30:  private readonly inFlight = new Map<string, Promise<void>>();
+src/paper-service.ts:31:  private readonly sellTape: { token: string; tokenUnits: string; result: import("./paper.js").QuoteResult }[] = [];
+src/paper-service.ts:32:  private lastMonitorAt: string | null = null;
+src/paper-service.ts:33:  private monitorError: string | null = null;
+src/paper-service.ts:34:  private stopped = false;
+src/paper-service.ts:35:  private started = false;
+src/paper-service.ts:36:  private closing: Promise<void> | undefined;
+src/paper-service.ts:37:  private error: string | null = null;
+src/paper-service.ts:38:  private lastSuccess: string | null = null;
+src/paper-service.ts:39:  private lastScanLogAt = 0;
+src/paper-service.ts:40:  private lastCycleMs: number | null = null;
+src/paper-service.ts:48:  private report(message: string): void {
+src/paper-service.ts:55:  private reportEvents(events: import("./paper.js").ActivityEvent[]): void {
+src/paper-service.ts:80:  private async reportMemory(): Promise<void> {
+src/paper-service.ts:97:  async monitor(): Promise<void> {
+src/paper-service.ts:140:  async tick(): Promise<void> {
+src/paper-service.ts:256:  async resetAccount(startingBalanceUsd: number): Promise<void> {
+src/paper-research.ts:4:export function researchMetrics(state: PaperState, now = Date.now()) {
+src/market.ts:32:export function decodePonsTokenMetadata(nameRaw: unknown, symbolRaw: unknown, infoRaw: unknown): PonsTokenMetadata {
+src/market.ts:127:export function assessPonsLaunch(pairLabel: "ETH" | "OTHER", market: PonsMarketState): PonsAssessment {
+src/market.ts:191:export function encodeAddressArgument(value: string): string {
+src/market.ts:196:export function decodePonsMarketState(launch: LiveLaunch, reads: PonsMarketReads): PonsMarketState {
+src/market.ts:252:export async function readPonsLaunchResearch(
+src/market.ts:307:export async function readPonsMarketStates(rpc: RpcCaller, launches: LiveLaunch[], blockTag: string): Promise<PonsMarketState[]> {
+src/paper-policy.ts:48:export function accountCapacity(state: PaperState, now = Date.now()) {
+src/paper-policy.ts:69:export function proposeTradePlan(state: PaperState, candidate: Candidate, quote: PaperQuote, now: number): PaperTradePlan {
+src/paper-policy.ts:133:export function initialManagement(): Management {
+src/paper-policy.ts:138:export function evaluateExit(position: Position, now: number): ExitDecision | null {
+src/server.ts:57:export function createHttpRpcCaller(url?: string, options: RpcCallerOptions = {}): RpcCaller {
+src/server.ts:127:export async function stopDeskServer(server: Server): Promise<void> {
+src/server.ts:133:export function createDeskServer(options: DeskServerOptions = {}): Server {
+src/server.ts:348:export async function startDeskServer(options: DeskServerOptions & { host?: string; port?: number } = {}): Promise<Server> {
+src/paper-strategy.ts:4:export function roundTripLossPercent(quote: PaperQuote): number | null {
+src/paper-strategy.ts:30:export function entryQuality(candidate: Candidate, quote?: PaperQuote, now = Date.now(), policy: PaperStrategyPolicy = PAPER_STRATEGY): EntryQuality {
+src/paper-strategy.ts:79:export function entryRegimeRejection(state: PaperState, now: number): string | null {
+src/paper-strategy.ts:110:export function getPaperStrategy(config: Pick<PaperConfig, "PAPER_STRATEGY_VERSION">, equityUsd?: number): PaperStrategyPolicy {
+src/paper-strategy.ts:118:export function entryPolicyConfig(config: PaperConfig): PaperConfig {
+src/paper-strategy.ts:128:export function entryExecutionQuality(quote: PaperQuote, history: import("./paper-liquidity.js").LiquidityObservation[], now: number,
+src/runtime-limits.ts:5:export class WorkLimiter {
+src/runtime-limits.ts:6:  private active = 0;
+src/runtime-limits.ts:7:  private nonCritical = 0;
+src/runtime-limits.ts:8:  private queue: { priority: number; start: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }[] = [];
+src/runtime-limits.ts:44:export function registerRpcLimiter(caller:Function,limiter:WorkLimiter) { rpcLimiters.set(caller,limiter); }
+src/runtime-limits.ts:45:export function rpcWorkStatus(caller:Function|undefined) { return caller ? rpcLimiters.get(caller)?.status()??null : null; }
+src/runtime-limits.ts:46:export class MemoryHealth {
+src/runtime-limits.ts:47:  private delay = monitorEventLoopDelay({ resolution: 20 });
+src/paper-gas.ts:8:export class PaperGasCounter {
+src/paper-gas.ts:9:  private chain: GasRate | null = null;
+src/paper-gas.ts:10:  private ethereum: GasRate | null = null;
+src/paper-gas.ts:11:  private attemptedAt = -Infinity;
+src/paper-gas.ts:12:  private pending: Promise<void> | undefined;
+src/paper-gas.ts:14:  async refresh(): Promise<void> {
+src/paper-gas.ts:38:  private fresh(rate: GasRate | null): GasRate | null { const age = rate ? this.clock() - Date.parse(rate.timestamp) : Infinity; return rate && age >= 0 && age <= 30_000 ? rate : null; }
+src/launch-evidence.ts:21:export function normalizeTimestampMs(value: unknown): number | null {
+src/launch-evidence.ts:32:export async function readHeader(rpc: RpcCaller, block: number): Promise<{ timestamp: number; timestampMs: number; hash: string } | null> {
+src/launch-evidence.ts:98:export function unknownLaunchEvidence(launchBlock: number): LaunchEvidence {
+src/paper-quotes.ts:13:export function usdToWei(usd: string, ethUsd: string): bigint {
+src/paper-quotes.ts:46:export class QuoteDataError extends Error {
+src/paper-quotes.ts:49:export function classifyQuoteError(error: unknown): string {
+src/paper-quotes.ts:58:export function createEthUsdProvider(fetcher: typeof fetch = fetch, clock = Date.now, maxAge: number = PAPER_CONFIG.ETH_USD_MAX_AGE_MS): UsdRateProvider {
+src/paper-quotes.ts:232:export async function readPaperQuote(
+src/paper-quotes.ts:287:export function readPaperEntryQuote(rpc: RpcCaller, launch: LiveLaunchDecision, sizeUsd: number, usd = defaultUsd): Promise<QuoteResult> {
+src/paper-quotes.ts:290:export async function readPaperExitQuote(rpc: RpcCaller, position: Position, usd = defaultUsd, clock = Date.now, config: PaperConfig = PAPER_CONFIG): Promise<QuoteResult> {
+src/paper-quotes.ts:316:export class PaperQuoteService {
+src/paper-quotes.ts:317:  private readonly pendingQuotes = new Map<string, Promise<QuoteResult>>();
+src/paper-quotes.ts:318:  private readonly tokenTails = new Map<string, Promise<void>>();
+src/paper-quotes.ts:319:  private readonly entryLane = new WorkLimiter(1,32);
+src/paper-quotes.ts:320:  private readonly exitLane = new WorkLimiter(2,32);
+src/paper-quotes.ts:321:  private async limited(key: string, work: () => Promise<QuoteResult>): Promise<QuoteResult> {
+src/paper-quotes.ts:341:  private lastUsd: UsdRate | null = null;
+src/paper-quotes.ts:342:  private usdError: string | null = null;
+src/paper-quotes.ts:343:  private lastQuote: PaperQuote | null = null;
+src/paper-quotes.ts:344:  private lastAttempt: { timestamp: string; reason: string | null } | null = null;
+src/paper-quotes.ts:345:  private readonly usd: UsdRateProvider;
+src/paper-quotes.ts:346:  private readonly gas: PaperGasCounter;
+src/paper-quotes.ts:355:  async refreshUsd(): Promise<void> { try { await Promise.all([this.usd(), this.gas.refresh()]); } catch { /* Status captures failure; positions retain their marks. */ } }
+src/paper-quotes.ts:356:  private record(result: QuoteResult): QuoteResult {
+src/paper-quotes.ts:361:  async buy(launch: LiveLaunchDecision, sizeUsd: number): Promise<QuoteResult> {
+src/paper-quotes.ts:364:  async sell(position: Position): Promise<QuoteResult> {
+src/paper-forward.ts:7:export class ForwardRecorder {
+src/paper-forward.ts:8:  private tail: Promise<void> = Promise.resolve();
+src/paper-forward.ts:9:  private pending = 0;
+src/paper-forward.ts:10:  private written = 0;
+src/paper-forward.ts:11:  private skipped = 0;
+src/paper-forward.ts:12:  private error: string | null = null;
+src/paper-forward.ts:35:  async close() { await this.tail; }
+src/paper.ts:118:export function initialPaperState(now = Date.now(), config: PaperConfig = PAPER_CONFIG): PaperState {
+src/paper.ts:134:export function quoteProblem(q: PaperQuote, now: number, maxAge: number, usdMaxAge = maxAge): string | null {
+src/paper.ts:169:export function dailyRealizedLoss(state: PaperState, now: number): number {
+src/paper.ts:173:export function paperLaunchRejection(c: Candidate, state: PaperState, now: number): string | null {
+src/paper.ts:186:export function isPaperTradeEligible(candidate: Candidate, state: PaperState, sizeUsd: number, now = Date.now()): Eligibility {
+src/paper.ts:251:export function completedWatch(handoffs: AgentHandoff[]): boolean {
+src/paper.ts:258:export function positionValue(p: Position): number { return p.current.notionalUsd - (p.current.side === "SELL" ? p.current.costs.gasUsd ?? 0 : 0); }
+src/paper.ts:259:export function accountSummary(state: PaperState) {
+src/paper.ts:272:export function performance(state: PaperState): { totalTrades: number; wins: number; losses: number; winRate: number; grossProfit: number; grossLoss: number; netPnl: number; averageWin: number | null; averageLoss: number | null; profitFactor: number | null; expectancy: number | null; maximumDrawdown: number; maximumDrawdownUsd: number; peakEquity: number; averageHoldingTime: number | null; estimatedFees: { knownUsd: number; unknownFills: number }; estimatedSlippage: { knownUsd: number; unknownFills: number }; estimatedGasCosts: { knownUsd: number; unknownFills: number } } {
+src/paper.ts:294:export function activity(state: PaperState, eventType: string, message: string, now: number, candidate?: Candidate, metadata: Record<string, unknown> = {}): void {
+src/paper.ts:305:export function recordEquity(state: PaperState, now: number): void {
+src/paper.ts:308:export function enterPaper(state: PaperState, candidate: Candidate, sizeUsd: number, now = Date.now(), plan?: PaperTradePlan): Eligibility {
+src/paper.ts:362:export function markPaperPosition(state: PaperState, id: string, result: QuoteResult, now = Date.now()): boolean {
+src/paper.ts:429:export async function monitorPaper(state: PaperState, provider: QuoteProvider, clock = Date.now): Promise<void> {
+src/paper.ts:456:export function liveCandidate(launch: LiveLaunchDecision): Candidate {
+src/paper.ts:463:export function unavailablePonsQuote(launch?: LiveLaunchDecision): QuoteResult {
+src/paper.ts:496:export function observeCandidateTraction(state: PaperState, candidate: Candidate, snapshot: LiveSnapshot, clock: () => number): TractionDiagnostics {
+src/paper.ts:555:export async function observeSnapshot(state: PaperState, snapshot: LiveSnapshot, now = Date.now(), quotes?: EntryQuoteProvider, clock: () => number = () => now): Promise<void> {
+src/paper.ts:638:export async function preparePaperTrade(state: PaperState, candidate: Candidate, quotes: EntryQuoteProvider, clock = Date.now): Promise<void> {

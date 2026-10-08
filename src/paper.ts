@@ -1,3 +1,4 @@
+import { LiquiditySurvivalGate, v5RiskTriggers } from "./paper-v5.js";
 import { entryQuality, entryRegimeRejection, entryExecutionQuality, roundTripLossPercent, getPaperStrategy, entryPolicyConfig, PAPER_STRATEGY } from "./paper-strategy.js";
 import { V4, v4PoolId, type V4Evidence, type V4Route } from "./uniswap-v4.js";
 import { sellObservation, failedSellObservation, appendLiquidityObservation, ExitLiquiditySafetyGate, type LiquidityObservation } from "./paper-liquidity.js";
@@ -116,7 +117,7 @@ const positive = (n: number): boolean => Number.isFinite(n) && n > 0;
 const iso = (now: number): string => new Date(now).toISOString();
 export function initialPaperState(now = Date.now(), config: PaperConfig = PAPER_CONFIG): PaperState {
   if (Object.keys(PAPER_CONFIG).some(key => !positive(config[key as keyof PaperConfig])) ||
-      ![3, 4].includes(config.PAPER_STRATEGY_VERSION) ||
+      ![3, 4, 5].includes(config.PAPER_STRATEGY_VERSION) ||
       !Number.isInteger(config.TRACTION_OBSERVATION_COUNT) || config.TRACTION_OBSERVATION_COUNT < 2 ||
       config.TRACTION_WINDOW_SECONDS <= 0 || config.TRACTION_OBSERVATION_MIN_MS <= 0 ||
       !Number.isInteger(config.LIQUIDITY_OBSERVATION_COUNT) || config.LIQUIDITY_OBSERVATION_COUNT < 2 || config.LIQUIDITY_OBSERVATION_COUNT > 100 ||
@@ -240,6 +241,10 @@ export function isPaperTradeEligible(candidate: Candidate, state: PaperState, si
     const executable = entryExecutionQuality(q, state.liquidityHistory?.[candidate.launchId] ?? [], now, policy);
     if (!executable.passed) return reject(executable.reason!, "PAPER_REJECT", [JSON.stringify(executable)]);
   }
+  if(policy.version===5) {
+    const survival=LiquiditySurvivalGate(candidate,q,state,now);
+    if(survival.result!=="V5_ENTRY_APPROVED") return reject(survival.result,"PAPER_REJECT",[JSON.stringify(survival)]);
+  }
   return { outcome: "PAPER_ELIGIBLE", reason: "ALL_PAPER_GATES_CLEARED", details: ["SIMULATED_EXECUTION", "Social quality is unverified; gas and execution drift are excluded when unknown"] };
 }
 /** Every agent must finish in order. INFO is honest completion, not fabricated PASS evidence. */
@@ -287,6 +292,13 @@ export function performance(state: PaperState): { totalTrades: number; wins: num
 }
 
 export function activity(state: PaperState, eventType: string, message: string, now: number, candidate?: Candidate, metadata: Record<string, unknown> = {}): void {
+  if (["PAPER_REJECT", "NOT_TRADABLE", "OBSERVING", "QUOTE_UNAVAILABLE"].includes(eventType)) {
+    const prior = [...state.events].reverse().find(e=>e.tokenAddress===(candidate?.tokenAddress??null) && e.eventType===eventType);
+    if (prior?.message === message) {
+      prior.metadata.firstOccurrence ??= prior.timestamp;
+      prior.metadata.lastOccurrence = iso(now); prior.metadata.occurrences = Number(prior.metadata.occurrences ?? 1)+1; return;
+    }
+  }
   state.events.push({ timestamp: iso(now), category: "PAPER", stage: "PAPER", tokenAddress: candidate?.tokenAddress ?? null,
     tokenSymbol: candidate?.symbol ?? null, eventType, message, metadata });
 }
@@ -315,7 +327,7 @@ export function enterPaper(state: PaperState, candidate: Candidate, sizeUsd: num
       ...(result.reason === "BACKFILL_EVENT" ? { eventProvenance: Object.fromEntries(result.details.map(detail => {
         const separator = detail.indexOf("="); return [detail.slice(0, separator), detail.slice(separator + 1)];
       })) } : {}) });
-  const planStrategy = plan?.strategyVersion === 4 ? getPaperStrategy({ PAPER_STRATEGY_VERSION: 4 }, plan.account.equityUsd) : PAPER_STRATEGY;
+  const planStrategy = (plan?.strategyVersion === 4 || plan?.strategyVersion === 5) ? getPaperStrategy({ PAPER_STRATEGY_VERSION: plan.strategyVersion }, plan.account.equityUsd) : PAPER_STRATEGY;
   if (plan && (plan.strategyVersion ?? 0) >= 2 && sizeUsd > plan.account.equityUsd * planStrategy.maxTokenExposurePercent / 100 + 1e-8) {
     result = { outcome: "PAPER_REJECT", reason: "PLAN_GAP_RISK_CAP", details: [] };
   }
@@ -367,8 +379,12 @@ export function markPaperPosition(state: PaperState, id: string, result: QuoteRe
     p.management.liquidity = ExitLiquiditySafetyGate(liquidity, rows, state.config);
     const before = prior?.realQuoteReserveWei ?? p.entry.roundTrip?.sell.evidence?.realQuoteReserve ?? p.entry.evidence?.realQuoteReserve;
     const drop = before && BigInt(before) > 0n ? Number(BigInt(before) - BigInt(liquidity.realQuoteReserveWei)) / Number(before) * 100 : 0;
-    if (liquidity.sellResult !== "AVAILABLE" || drop >= state.config.MAX_LIQUIDITY_DROP_PERCENT || p.management.liquidity.behavior === "COLLAPSING" ||
-        ["EXIT_COVERAGE_TOO_LOW", "REAL_LIQUIDITY_TOO_LOW"].includes(p.management.liquidity.reason ?? "")) {
+    if(p.plan.strategyVersion===5) {
+      const triggers=v5RiskTriggers(p,liquidity,prior);
+      if(triggers.length) p.management.pendingExit ??= { reason:triggers.length>1?"MULTIPLE_TRIGGERS":triggers[0]!.reason, triggeredAt:iso(now), reasoning:triggers.map(t=>`${t.reason}: ${t.predicate}`) };
+    }
+    if (p.plan.strategyVersion!==5 && (liquidity.sellResult !== "AVAILABLE" || drop >= state.config.MAX_LIQUIDITY_DROP_PERCENT || p.management.liquidity.behavior === "COLLAPSING" ||
+        ["EXIT_COVERAGE_TOO_LOW", "REAL_LIQUIDITY_TOO_LOW"].includes(p.management.liquidity.reason ?? ""))) {
       p.management.pendingExit ??= { reason: "LIQUIDITY_OR_QUOTE_DETERIORATION", triggeredAt: iso(now),
         reasoning: [...p.management.liquidity.details, `previousReserveWei=${before ?? "UNKNOWN"}; currentReserveWei=${liquidity.realQuoteReserveWei}; declinePercent=${drop}`] };
     }
@@ -376,6 +392,7 @@ export function markPaperPosition(state: PaperState, id: string, result: QuoteRe
   }
   if (problem || !q || q.notionalUsd > q.liquidityUsd || (q.costs.gasUsd ?? 0) >= q.notionalUsd) {
     p.markStatus = "UNAVAILABLE"; p.markReason = problem ?? (!q ? "QUOTE_UNAVAILABLE" : q.notionalUsd > q.liquidityUsd ? "INVALID_QUOTE_LIQUIDITY" : "EXIT_COST_EXCEEDS_PROCEEDS");
+    if(p.plan.strategyVersion===5) p.management.pendingExit ??= {reason:p.markReason.includes("STALE")?"SELL_QUOTE_STALE":"SELL_QUOTE_UNAVAILABLE",triggeredAt:iso(now),reasoning:[`quoteFailure=${p.markReason}; no executable fill available; retry until a fresh full sell exists`]};
     p.management.quoteFailureCount++; p.management.consecutiveQuoteFailures++;
     if (p.management.pendingExit) p.management.exitExecutionStatus = "EXIT_TRIGGERED_BUT_UNEXECUTABLE";
     p.management.holdReason = `QUOTE UNAVAILABLE: ${p.markReason}; last successful value retained`;
@@ -506,7 +523,7 @@ export function observeCandidateTraction(state: PaperState, candidate: Candidate
       verificationStatus: verified ? "VERIFIED" : "UNAVAILABLE", quoteStatus: candidate.quote.status === "AVAILABLE" ? "AVAILABLE" : candidate.quote.reason });
   }
   const cutoff = (candidate.currentTimestamp ?? Math.floor(clock()/1000)) - config.TRACTION_WINDOW_SECONDS;
-  const observations = rows.filter(row => Date.parse(row.timestamp) / 1000 >= cutoff);
+  const observations = rows.filter(row => Date.parse(row.timestamp) / 1000 >= cutoff).slice(-100);
   historyMap[key] = observations;
   const recent = observations.filter(row => row.verificationStatus === "VERIFIED");
   const first = recent[0], last = recent.at(-1);

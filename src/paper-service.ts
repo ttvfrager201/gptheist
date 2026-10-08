@@ -1,3 +1,5 @@
+import { ForwardRecorder } from "./paper-forward.js";
+import { MemoryHealth, runtimeLimits, withRpcPriority, rpcWorkStatus } from "./runtime-limits.js";
 import { collectionCounts } from "./paper-retention.js";
 import { accountCapacity } from "./paper-policy.js";
 import { getPaperStrategy } from "./paper-strategy.js";
@@ -14,11 +16,16 @@ export interface PaperServiceOptions {
 }
 
 export class PaperService {
+  private readonly forward: ForwardRecorder;
+  private readonly memoryHealth = new MemoryHealth();
+  private memory = this.memoryHealth.sample();
   readonly startedAt = Date.now();
   private memoryTimer: ReturnType<typeof setInterval> | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pending: Promise<void> | undefined;
   private monitorTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly failureStates = new Map<string,string>();
+  private readonly logTimes = new Map<string,number>();
   private readonly retryAfter = new Map<string, number>();
   private readonly inFlight = new Map<string, Promise<void>>();
   private readonly sellTape: { token: string; tokenUnits: string; result: import("./paper.js").QuoteResult }[] = [];
@@ -29,20 +36,31 @@ export class PaperService {
   private closing: Promise<void> | undefined;
   private error: string | null = null;
   private lastSuccess: string | null = null;
+  private lastScanLogAt = 0;
   private lastCycleMs: number | null = null;
   constructor(readonly store: PaperStore, private readonly snapshot: () => Promise<LiveSnapshot>, private readonly quotes: QuoteProvider,
     private readonly entryQuotes?: EntryQuoteProvider, private readonly sources?: Pick<PaperQuoteService, "status" | "refreshUsd">, private readonly retryClock = Date.now,
     private readonly rpc?: import("./live.js").RpcCaller, private readonly options: PaperServiceOptions = {}) {
+    this.forward=new ForwardRecorder(`${store.directory}/research`);
     const interval = options.discoveryIntervalMs ?? 4000;
     if (!Number.isFinite(interval) || interval < 1000) throw new Error("PAPER_DISCOVERY_INTERVAL_MS must be at least 1000");
   }
   private report(message: string): void {
+    const key=message.slice(0,300),last=this.logTimes.get(key)??0;
+    if(!message.includes("PAPER_BUY") && !message.includes("SIMULATED_SELL") && Date.now()-last<60_000) return;
+    this.logTimes.delete(key);this.logTimes.set(key,Date.now());
+    if(this.logTimes.size>128)this.logTimes.delete(this.logTimes.keys().next().value!);
     try { this.options.log?.(message); } catch { /* Logging must not interrupt account updates. */ }
   }
   private reportEvents(events: import("./paper.js").ActivityEvent[]): void {
     const failures = new Map<string, number>();
     for (const event of events) {
-      if (event.eventType === "QUOTE_UNAVAILABLE") failures.set(event.message, (failures.get(event.message) ?? 0) + 1);
+      const token=event.tokenAddress??"SYSTEM";
+      if(event.eventType==="SELL_QUOTE_UPDATED") this.failureStates.delete(token);
+      if (event.eventType === "QUOTE_UNAVAILABLE" && this.failureStates.get(token)!==event.message) {
+        this.failureStates.set(token,event.message);failures.set(event.message,(failures.get(event.message)??0)+1);
+        if(this.failureStates.size>128)this.failureStates.delete(this.failureStates.keys().next().value!);
+      }
       if (event.category === "RESEARCH" || !["PAPER_BUY", "SIMULATED_SELL", "OPEN_TRADE_LIMIT_UPDATED"].includes(event.eventType)) continue;
       const numbers = ["sizeUsd", "pnlUsd", "returnPercent"].filter(key => typeof event.metadata[key] === "number")
         .map(key => `${key}=${Number(event.metadata[key]).toFixed(2)}`).join(" ");
@@ -54,14 +72,27 @@ export class PaperService {
     if (this.started || this.stopped) return;
     this.started = true;
     const config = this.store.read().config, policy = getPaperStrategy(config);
-    this.report(`PAPER started: ${policy.version === 4 ? "SCALP" : "STRICT"} v${policy.version}; simulated trades; discovery every ${this.options.discoveryIntervalMs ?? 4000}ms; exit quotes every ${config.PAPER_QUOTE_REFRESH_MS}ms`);
-    this.memoryTimer=setInterval(()=>this.reportMemory(),300_000);
+    this.report(`PAPER started: ${policy.version === 5 ? "V5" : policy.version === 4 ? "SCALP" : "STRICT"} v${policy.version}; simulated trades; discovery every ${this.options.discoveryIntervalMs ?? 4000}ms; exit quotes every ${config.PAPER_QUOTE_REFRESH_MS}ms`);
+    this.memoryTimer=setInterval(()=>void this.reportMemory(),30_000);
     this.memoryTimer.unref();
     void this.tick();
   }
-  private reportMemory(): void {
-    const memory=process.memoryUsage();
-    this.report("MEMORY " + Object.entries(memory).map(([k,v])=>`${k}=${(v/1048576).toFixed(1)}MB`).join(" ") + " " + Object.entries(collectionCounts(this.store.read())).map(([k,v])=>`${k}=${v}`).join(" ") + ` timers=${Number(!!this.timer)+Number(!!this.monitorTimer)+Number(!!this.memoryTimer)} inFlight=${this.inFlight.size} retry=${this.retryAfter.size} sellTape=${this.sellTape.length}`);
+  private async reportMemory(): Promise<void> {
+    this.memory=this.memoryHealth.sample();
+    if(this.memory.pressure!=="NORMAL") {
+      this.report(`MEMORY_PRESSURE ${this.memory.pressure} rssMiB=${(this.memory.rss/1048576).toFixed(1)}`);
+      try { await this.store.update(state=>{
+        const protectedIds=new Set(state.positions.map(p=>p.launchId));
+        for(const id of Object.keys(state.tractionWatchlist??{})) if(!protectedIds.has(id)) {
+          // Record eviction evidence before normal durable retention archives it.
+          if(this.memory.pressure==="CRITICAL") {
+            activity(state,"MEMORY_CANDIDATE_SHED","Inactive candidate shed under critical pressure",Date.now(),undefined,{launchId:id});
+            delete state.tractionWatchlist![id];
+          }
+          delete state.tractionHistory?.[id]; delete state.liquidityHistory?.[id];
+        }
+      }); } catch(error) { this.report(`PERSISTENCE_FAILURE ${String(error).slice(0,200)}`); }
+    }
   }
   async monitor(): Promise<void> {
     if (this.stopped) return;
@@ -77,8 +108,8 @@ export class PaperService {
       const cash = base.cash;
       const draft = { ...base, positions: [position], events: [], trades: [], history: [], decisions: [] };
       await monitorPaper(draft, async p => {
-        const result = await this.quotes(p);
-        if (this.sellTape.length >= 1000) this.sellTape.shift(); // Every quote also persists in the append-only event archive.
+        const result = await withRpcPriority(0,()=>this.quotes(p));
+        if (this.sellTape.length >= runtimeLimits.quoteSamples) this.sellTape.shift(); // Every quote also persists in the append-only event archive.
         this.sellTape.push({ token: p.tokenAddress, tokenUnits: p.entry.tokenUnits ?? "", result: structuredClone(result) });
         return result;
       });
@@ -116,7 +147,8 @@ export class PaperService {
       void this.sources?.refreshUsd().catch(error => this.report("PAPER USD refresh error: " + String(error)));
       let snapshot: LiveSnapshot | undefined;
       try {
-        snapshot = await this.snapshot(); this.lastSuccess = snapshot.fetchedAt; this.error = null;
+        if(this.memory.pressure==="CRITICAL") return;
+        snapshot = await withRpcPriority(3,()=>this.snapshot()); this.lastSuccess = snapshot.fetchedAt; this.error = null;
         const state = this.store.read();
         if (snapshot.fetchedAt === state.lastSnapshotAt) return;
         const present = new Set(snapshot.launches.map(l => `${l.transactionHash}:${l.logIndex}`));
@@ -140,8 +172,9 @@ export class PaperService {
             const result = await entryQuotes(launch, sizeUsd);
             buys.push({ token: launch.token, sizeUsd, result: structuredClone(result) }); return result;
           } : undefined, Date.now);
-          activity(draft, "PAPER_LAB_FRAME", "Common chronological research tape; no shadow quote interpolation", Date.now(), undefined,
-            { frame: { sequence: Date.now(), completedAt: new Date().toISOString(), snapshot, buys, sells: this.sellTape.splice(0) } });
+          if(this.memory.pressure==="NORMAL" && process.env.PAPER_RESEARCH_ENABLED!=="false")
+            await this.forward.record({sequence:Date.now(),completedAt:new Date().toISOString(),snapshot,buys,sells:this.sellTape.splice(0)});
+          else this.sellTape.length=0;
           const committedEvents: import("./paper.js").ActivityEvent[] = [];
           await this.store.update(state => {
             const eventStart = state.events.length;
@@ -166,7 +199,7 @@ export class PaperService {
             committedEvents.push(...state.events.slice(eventStart));
           });
           this.reportEvents(committedEvents);
-          this.report(`PAPER scan: block ${snapshot.headBlock}, ${snapshot.launches.length} launches, ${this.store.read().positions.length} open positions, ${Date.now() - cycleStartedAt}ms`);
+          if(process.env.PAPER_DEBUG_LOG === "true" || Date.now()-this.lastScanLogAt>=60_000) { this.lastScanLogAt=Date.now(); this.report(`PAPER scan: block ${snapshot.headBlock}, ${snapshot.launches.length} launches, ${this.store.read().positions.length} open positions, ${Date.now() - cycleStartedAt}ms`); }
         } else await this.store.update(state => { activity(state, "RPC_FAILURE", this.error ?? "RPC unavailable", Date.now()); });
       } catch (error) { this.error = error instanceof Error ? error.message : "Paper persistence failed"; }
     })().finally(async () => {
@@ -180,6 +213,7 @@ export class PaperService {
     });
     return this.pending;
   }
+  health() { return {memory:this.memory, persistence:this.store.status(),rpc:rpcWorkStatus(this.rpc)}; }
   view() {
     const state = this.store.read();
     const latestDecisions = new Map<string, typeof state.decisions[number]>();
@@ -193,7 +227,7 @@ export class PaperService {
     const allocationCapUsd = accountCapacity(state).equityUsd * getPaperStrategy(state.config, accountCapacity(state).equityUsd).maxTokenExposurePercent / 100;
     const entryDiagnostics = { allocationCapUsd, minimumTradeUsd: state.config.MIN_POSITION_USD,
       accountSizingBlocked: allocationCapUsd < state.config.MIN_POSITION_USD,
-      strategyMode: state.config.PAPER_STRATEGY_VERSION === 4 ? "SCALP" : "STRICT",
+      strategyMode: state.config.PAPER_STRATEGY_VERSION === 5 ? "V5" : state.config.PAPER_STRATEGY_VERSION === 4 ? "SCALP" : "STRICT",
       strategyVersion: state.config.PAPER_STRATEGY_VERSION, currentBlock: state.lastObservedHeadBlock, liveCandidates: live.length,
       discoveryIntervalMs: this.options.discoveryIntervalMs ?? 4000, lastCycleMs: this.lastCycleMs, scanning: !!this.pending,
       blockers: [...blockers].map(([reason, count]) => ({ reason, count })).sort((a,b) => b.count - a.count) };
@@ -213,7 +247,7 @@ export class PaperService {
         quoteAgeMs: successful ? Date.now() - Date.parse(successful.timestamp) : null,
         consecutiveFailures: p.management.consecutiveQuoteFailures, lastFailureReason: p.markReason });
     }
-    return { entryDiagnostics, monitor: { lastCompletedAt: this.lastMonitorAt, running: this.inFlight.size > 0, error: this.monitorError }, quoteHealth: this.sources?.status() ?? null, execution: "SIMULATED", startedAt: new Date(this.startedAt).toISOString(),
+    return { systemHealth: {researchRecording:this.forward.status(), rpc:rpcWorkStatus(this.rpc), memory:this.memory, collections:collectionCounts(state), persistence:this.store.status(), pendingExitJobs:this.inFlight.size, timers:Number(!!this.timer)+Number(!!this.monitorTimer)+Number(!!this.memoryTimer)}, entryDiagnostics, monitor: { lastCompletedAt: this.lastMonitorAt, running: this.inFlight.size > 0, error: this.monitorError }, quoteHealth: this.sources?.status() ?? null, execution: "SIMULATED", startedAt: new Date(this.startedAt).toISOString(),
       connection: !this.error && this.lastSuccess && Date.now() - Date.parse(this.lastSuccess) <= state.config.QUOTE_MAX_AGE_MS ? "LIVE" : "UNAVAILABLE",
       error: this.error, lastSuccess: this.lastSuccess, account: accountSummary(state), riskCapacity: accountCapacity(state), performance: performance(state), research: researchMetrics(state),
       ...state, events: state.events.slice(-200), decisions: [...new Map(state.decisions.filter(d => state.tractionWatchlist?.[d.candidate.launchId]).map(d=>[d.candidate.launchId,d])).values()].slice(-100), recentRejections: state.decisions.filter(d=>d.outcome!=="PAPER_ELIGIBLE" && !state.tractionWatchlist?.[d.candidate.launchId]).slice(-25), trades: state.trades.slice(-100) };
@@ -235,7 +269,7 @@ export class PaperService {
   close(): Promise<void> {
     return this.closing ??= (async () => {
       this.stopped = true; clearTimeout(this.timer); clearTimeout(this.monitorTimer); clearInterval(this.memoryTimer);
-      await this.pending; await Promise.all(this.inFlight.values()); clearTimeout(this.timer); clearTimeout(this.monitorTimer); this.retryAfter.clear(); this.sellTape.length=0; await this.store.close();
+      this.memoryHealth.close(); await this.pending; await Promise.all(this.inFlight.values()); clearTimeout(this.timer); clearTimeout(this.monitorTimer); this.retryAfter.clear(); this.failureStates.clear();this.logTimes.clear(); this.sellTape.length=0; await this.forward.close(); await this.store.close();
     })();
   }
 }

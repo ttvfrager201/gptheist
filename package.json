@@ -40,7 +40,9 @@
     "desk": "npm run build --silent && node dist/src/cli.js desk",
     "prepare": "npm run build",
     "debug:paper-sell": "npm run build --silent && node scripts/debug-paper-sell.mjs",
-    "debug:liquidity-traps": "npm run build --silent && node scripts/debug-liquidity-traps.mjs"
+    "debug:liquidity-traps": "npm run build --silent && node scripts/debug-liquidity-traps.mjs",
+    "stress:v5": "npm run build && node --max-old-space-size=384 scripts/v5-memory-stress.mjs",
+    "replay:v5": "node scripts/v5-replay.mjs"
   },
   "engines": {
     "node": ">=18"

@@ -1,0 +1,9 @@
+{
+  "command": "npm test",
+  "tests": 238,
+  "passed": 238,
+  "failed": 0,
+  "durationMs": 19984.051768,
+  "typescriptBuildPassed": true,
+  "noProductionActions": true
+}

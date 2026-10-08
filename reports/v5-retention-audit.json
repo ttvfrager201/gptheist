@@ -1,0 +1,55 @@
+{
+  "method": "Read-only serialized component sizes of local persisted account; not heap attribution or current Railway profiling",
+  "components": [
+    [
+      "tractionWatchlist",
+      15097593,
+      3057
+    ],
+    [
+      "decisions",
+      7534960,
+      500
+    ],
+    [
+      "events",
+      4304500,
+      2000
+    ],
+    [
+      "researchLedger",
+      2276003,
+      5102
+    ],
+    [
+      "tractionHistory",
+      1245556,
+      84
+    ],
+    [
+      "trades",
+      776271,
+      7
+    ],
+    [
+      "liquidityHistory",
+      20380,
+      6
+    ],
+    [
+      "history",
+      5650,
+      65
+    ],
+    [
+      "config",
+      838,
+      28
+    ],
+    [
+      "latestGate",
+      67,
+      3
+    ]
+  ]
+}

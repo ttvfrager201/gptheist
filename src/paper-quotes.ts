@@ -1,3 +1,4 @@
+import { withRpcPriority, runtimeLimits, WorkLimiter } from "./runtime-limits.js";
 import { PaperGasCounter } from "./paper-gas.js";
 import { readV4SellQuote } from "./uniswap-v4.js";
 import { curveAmountOut, uint256 } from "./paper-math.js";
@@ -315,11 +316,12 @@ export async function readPaperExitQuote(rpc: RpcCaller, position: Position, usd
 export class PaperQuoteService {
   private readonly pendingQuotes = new Map<string, Promise<QuoteResult>>();
   private readonly tokenTails = new Map<string, Promise<void>>();
-  private readonly waiting: (() => void)[] = [];
-  private active = 0;
+  private readonly entryLane = new WorkLimiter(1,32);
+  private readonly exitLane = new WorkLimiter(2,32);
   private async limited(key: string, work: () => Promise<QuoteResult>): Promise<QuoteResult> {
     const pending = this.pendingQuotes.get(key);
     if (pending) return pending;
+    if(this.pendingQuotes.size>=runtimeLimits.pendingRpc) return {status:"NOT_PAPER_TRADABLE",reason:"RPC_BACKPRESSURE",details:["Bounded quote admission"]};
     const token = key.split(":")[1]!;
     const prior = this.tokenTails.get(token);
     let release!: () => void;
@@ -327,10 +329,8 @@ export class PaperQuoteService {
     this.tokenTails.set(token, tail);
     const job = (async () => {
       if (prior) await prior;
-      if (this.active >= 2) await new Promise<void>(resolve => this.waiting.push(resolve));
-      else this.active++;
-      try { return await work(); }
-      finally { const next = this.waiting.shift(); if (next) next(); else this.active--; }
+      const exit=key.startsWith("SELL");
+      return (exit?this.exitLane:this.entryLane).run(()=>withRpcPriority(exit?0:2,work),exit?0:2);
     })().finally(() => {
       this.pendingQuotes.delete(key); release();
       if (this.tokenTails.get(token) === tail) this.tokenTails.delete(token);
@@ -369,7 +369,7 @@ export class PaperQuoteService {
   status() {
     const usdStatus = this.usdError ?? (!this.lastUsd ? "ETH_USD_UNAVAILABLE" : fresh(this.lastUsd.timestamp, this.clock(), this.config.ETH_USD_MAX_AGE_MS) ? "LIVE" : "ETH_USD_STALE");
     const quoteFresh = this.lastQuote && !quoteProblem(this.lastQuote, this.clock(), this.config.QUOTE_MAX_AGE_MS, this.config.ETH_USD_MAX_AGE_MS);
-    return { status: quoteFresh && usdStatus === "LIVE" && this.lastAttempt?.reason === null ? "LIVE" : "DEGRADED",
+    return { pendingRequests: this.pendingQuotes.size, lanes:{entry:this.entryLane.status(),exit:this.exitLane.status()}, status: quoteFresh && usdStatus === "LIVE" && this.lastAttempt?.reason === null ? "LIVE" : "DEGRADED",
       gas: this.gas.status(usdStatus === "LIVE" ? this.lastUsd?.ask ?? null : null),
       quoteSource: this.lastQuote?.source ?? "Pons curve / awaiting verified quote", lastAttempt: this.lastAttempt,
       lastQuoteTimestamp: this.lastQuote?.timestamp ?? null,

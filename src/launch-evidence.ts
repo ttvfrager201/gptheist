@@ -89,6 +89,8 @@ export async function readHeader(rpc: RpcCaller, block: number): Promise<{ times
   session.head = Math.max(session.head, head);
   for (const [token, observation] of session.observations) if (observation.launchBlock < head - 25_000) session.observations.delete(token);
   for (const block of session.headers.keys()) if (block < head - 25_000) session.headers.delete(block);
+  while(session.observations.size>1024) session.observations.delete(session.observations.keys().next().value!);
+  while(session.headers.size>512) session.headers.delete(session.headers.keys().next().value!);
   sessions.set(rpc, session);
   return evidence;
 }
