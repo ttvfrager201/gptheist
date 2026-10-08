@@ -24,6 +24,20 @@ The live Desk reads public chain data only. It has **no wallet connection, priva
   <img src="./assets/desk.png" alt="GPTHEIST Desk showing live Robinhood Chain launches and a Palermo veto" width="100%">
 </p>
 
+## V5 setup in Codespaces
+
+The current Codespaces account is configured for V5 paper trading. For a complete installation, startup, backup, configuration, and troubleshooting guide, read **[README_V5.md](README_V5.md)**.
+
+From the repository root, after stopping any existing Desk and waiting for it to exit:
+
+```bash
+npm ci
+npm run build
+PAPER_STRATEGY_MODE=V5 node --max-old-space-size=384 dist/src/cli.js desk --host 0.0.0.0 --port 4173
+```
+
+In Codespaces, open the **Ports** tab, forward port **4173**, keep its visibility **Private**, and open `/paper`. The command uses the existing `runs/paper` account; it does not reset balances or trade history. A new local account defaults to $1,000; V5 profitability remains unproven. Run one Desk process per account. Shell environment variables are supported; `.env` files are not loaded automatically.
+
 ## Sixty seconds
 
 Requires Node.js 18 or newer.
